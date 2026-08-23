@@ -6,6 +6,22 @@ import type { ProjectIdentity } from './websocket/protocol';
 
 let client: BrokerClient | undefined;
 
+const PCB_MUTATIONS = new Set([
+	'pcb.place_component', 'pcb.modify_component', 'pcb.delete_components',
+	'pcb.create_track', 'pcb.modify_track', 'pcb.create_board_outline',
+	'pcb.create_via', 'pcb.modify_via',
+	'pcb.delete_routing_primitives', 'pcb.clear_routing', 'pcb.route_net', 'pcb.auto_route',
+	'pcb.auto_layout',
+]);
+const SCHEMATIC_MUTATIONS = new Set([
+	'schematic.add_component', 'schematic.place_component', 'schematic.modify_component',
+	'schematic.delete_components', 'schematic.delete_wires', 'schematic.clear',
+	'schematic.modify_wire', 'schematic.set_pin_no_connect',
+	'schematic.create_net_flag', 'schematic.create_net_port', 'schematic.create_net_label',
+	'schematic.connect_net', 'schematic.create_wire', 'schematic.connect',
+	'schematic.auto_layout', 'schematic.auto_route',
+]);
+
 async function getCurrentProject(): Promise<ProjectIdentity> {
 	const project = await eda.dmt_Project.getCurrentProjectInfo();
 	if (!project) {
@@ -26,10 +42,10 @@ async function dispatchAndEmit(
 	params: Record<string, unknown>,
 ): Promise<unknown> {
 	const result = await dispatchCommand(method, params);
-	if (method === 'pcb.place_component' || method === 'pcb.route_net') {
+	if (PCB_MUTATIONS.has(method)) {
 		client?.emitEvent('pcb.changed', { method });
 	}
-	else if (method === 'schematic.add_component' || method === 'schematic.connect') {
+	else if (SCHEMATIC_MUTATIONS.has(method)) {
 		client?.emitEvent('schematic.changed', { method });
 	}
 	return result;
@@ -63,4 +79,3 @@ export function showStatus(): void {
 		'JLCEDA AI Agent',
 	);
 }
-

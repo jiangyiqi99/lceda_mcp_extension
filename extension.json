@@ -3,7 +3,7 @@
 	"uuid": "7ec168c64f7d4a999d5197a42e591a6b",
 	"displayName": "JLCEDA AI Agent",
 	"description": "通过本地 WebSocket Broker 安全地执行 AI 发起的 EDA 操作",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"publisher": "Local Development",
 	"engines": {
 		"eda": "~3.2.0"
@@ -49,4 +49,3 @@
 		]
 	}
 }
-
