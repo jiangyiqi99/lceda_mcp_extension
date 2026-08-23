@@ -5,6 +5,23 @@ import { BrokerClient } from './websocket/client';
 import type { ProjectIdentity } from './websocket/protocol';
 
 let client: BrokerClient | undefined;
+let messageBusRegistered = false;
+
+const STATUS_TOPIC = 'jlceda-ai-agent-status';
+const CONTROL_TOPIC = 'jlceda-ai-agent-control';
+
+interface ConnectionStatus {
+	connected: boolean;
+	projectId?: string;
+}
+
+interface ControlRequest {
+	command: 'reconnect';
+}
+
+interface ControlResponse extends ConnectionStatus {
+	handled: boolean;
+}
 
 const PCB_MUTATIONS = new Set([
 	'pcb.place_component', 'pcb.modify_component', 'pcb.delete_components',
@@ -51,8 +68,36 @@ async function dispatchAndEmit(
 	return result;
 }
 
+function getConnectionStatus(): ConnectionStatus {
+	return {
+		connected: client?.isConnected() ?? false,
+		projectId: client?.getProjectId(),
+	};
+}
+
+function reconnectClient(): void {
+	if (!client) {
+		client = new BrokerClient(BROKER_WS_URL, getCurrentProject, dispatchAndEmit);
+	}
+	client.connect();
+}
+
+function ensureMessageBusServices(): void {
+	if (messageBusRegistered) return;
+	eda.sys_MessageBus.rpcService(STATUS_TOPIC, () => getConnectionStatus());
+	eda.sys_MessageBus.rpcService(
+		CONTROL_TOPIC,
+		(request?: ControlRequest): ControlResponse => {
+			if (request?.command === 'reconnect') reconnectClient();
+			return { handled: true, ...getConnectionStatus() };
+		},
+	);
+	messageBusRegistered = true;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function activate(status?: 'onStartupFinished', arg?: string): void {
+	ensureMessageBusServices();
 	client?.stop();
 	client = new BrokerClient(BROKER_WS_URL, getCurrentProject, dispatchAndEmit);
 	client.connect();
@@ -63,17 +108,32 @@ export function deactivate(): void {
 	client = undefined;
 }
 
-export function reconnect(): void {
-	if (!client) {
-		activate();
-		return;
+export async function reconnect(): Promise<void> {
+	try {
+		const response = await eda.sys_MessageBus.rpcCall(
+			CONTROL_TOPIC,
+			{ command: 'reconnect' } satisfies ControlRequest,
+			500,
+		) as ControlResponse;
+		if (response?.handled) return;
 	}
-	client.connect();
+	catch { /* fall back to the current extension context */ }
+	ensureMessageBusServices();
+	reconnectClient();
 }
 
-export function showStatus(): void {
-	const status = client?.isConnected() ? '已连接' : '未连接';
-	const projectId = client?.getProjectId() ?? '无';
+export async function showStatus(): Promise<void> {
+	let connection = getConnectionStatus();
+	try {
+		connection = await eda.sys_MessageBus.rpcCall(
+			STATUS_TOPIC,
+			undefined,
+			500,
+		) as ConnectionStatus;
+	}
+	catch { /* use the current context when no background service is available */ }
+	const status = connection.connected ? '已连接' : '未连接';
+	const projectId = connection.projectId ?? '无';
 	eda.sys_Dialog.showInformationMessage(
 		`Broker: ${status}\nProject ID: ${projectId}\nWebSocket: ${BROKER_WS_URL}`,
 		'JLCEDA AI Agent',

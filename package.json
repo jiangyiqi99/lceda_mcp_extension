@@ -1,6 +1,6 @@
 {
 	"name": "jlceda-ai-agent-extension",
-	"version": "0.2.0",
+	"version": "2.1.0",
 	"private": true,
 	"type": "module",
 	"description": "JLCEDA execution agent for the stateless AI MCP backend",
