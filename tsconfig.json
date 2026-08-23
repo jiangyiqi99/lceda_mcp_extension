@@ -1,0 +1,18 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"lib": ["ESNext", "DOM"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"resolveJsonModule": true,
+		"strict": true,
+		"noImplicitAny": true,
+		"noImplicitThis": true,
+		"useUnknownInCatchVariables": true,
+		"isolatedModules": true,
+		"skipLibCheck": true,
+		"noEmit": true
+	},
+	"include": ["src/**/*", "node_modules/@jlceda/pro-api-types/**/*"]
+}
+

@@ -1,0 +1,52 @@
+{
+	"name": "jlceda-ai-agent",
+	"uuid": "7ec168c64f7d4a999d5197a42e591a6b",
+	"displayName": "JLCEDA AI Agent",
+	"description": "通过本地 WebSocket Broker 安全地执行 AI 发起的 EDA 操作",
+	"version": "0.1.0",
+	"publisher": "Local Development",
+	"engines": {
+		"eda": "~3.2.0"
+	},
+	"license": "MIT",
+	"categories": "Other",
+	"keywords": ["AI", "MCP", "WebSocket", "Automation"],
+	"activationEvents": {
+		"onStartupFinished": true
+	},
+	"entry": "./dist/main",
+	"dependentExtensions": {},
+	"headerMenus": {
+		"home": [
+			{
+				"id": "JLCEDA AI",
+				"title": "JLCEDA AI",
+				"menuItems": [
+					{"id": "Reconnect", "title": "重新连接", "registerFn": "reconnect"},
+					{"id": "Status", "title": "连接状态", "registerFn": "showStatus"}
+				]
+			}
+		],
+		"sch": [
+			{
+				"id": "JLCEDA AI",
+				"title": "JLCEDA AI",
+				"menuItems": [
+					{"id": "Reconnect", "title": "重新连接", "registerFn": "reconnect"},
+					{"id": "Status", "title": "连接状态", "registerFn": "showStatus"}
+				]
+			}
+		],
+		"pcb": [
+			{
+				"id": "JLCEDA AI",
+				"title": "JLCEDA AI",
+				"menuItems": [
+					{"id": "Reconnect", "title": "重新连接", "registerFn": "reconnect"},
+					{"id": "Status", "title": "连接状态", "registerFn": "showStatus"}
+				]
+			}
+		]
+	}
+}
+
