@@ -1,6 +1,6 @@
 {
 	"name": "jlceda-ai-agent-extension",
-	"version": "2.1.0",
+	"version": "0.3.0",
 	"private": true,
 	"type": "module",
 	"description": "JLCEDA execution agent for the stateless AI MCP backend",
@@ -8,12 +8,14 @@
 		"node": ">=20.17.0"
 	},
 	"scripts": {
-		"typecheck": "tsc --noEmit",
+		"audit:api": "node ./scripts/audit-api-coverage.mjs",
+		"generate:api": "node ./scripts/generate-api-catalog.mjs",
+		"typecheck": "npm run generate:api && tsc --noEmit",
 		"compile": "node ./build/build.mjs --compile-only",
-		"build": "node ./build/build.mjs"
+		"build": "npm run generate:api && npm run audit:api && node ./build/build.mjs"
 	},
 	"devDependencies": {
-		"@jlceda/pro-api-types": "^0.4.14",
+		"@jlceda/pro-api-types": "0.4.15",
 		"esbuild": "^0.28.2",
 		"jszip": "^3.10.1",
 		"typescript": "^5.7.3"

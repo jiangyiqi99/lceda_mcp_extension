@@ -3,9 +3,12 @@ import { BROKER_WS_URL } from './config';
 import { CommandError } from './utils/validation';
 import { BrokerClient } from './websocket/client';
 import type { ProjectIdentity } from './websocket/protocol';
+import { configureRawApiEventSink } from './commands/raw-api';
 
 let client: BrokerClient | undefined;
 let messageBusRegistered = false;
+
+configureRawApiEventSink((event, data) => client?.emitEvent(event, data));
 
 const STATUS_TOPIC = 'jlceda-ai-agent-status';
 const CONTROL_TOPIC = 'jlceda-ai-agent-control';
@@ -33,7 +36,8 @@ const PCB_MUTATIONS = new Set([
 const SCHEMATIC_MUTATIONS = new Set([
 	'schematic.add_component', 'schematic.place_component', 'schematic.modify_component',
 	'schematic.delete_components', 'schematic.delete_wires', 'schematic.clear',
-	'schematic.modify_wire', 'schematic.set_pin_no_connect',
+	'schematic.modify_wire', 'schematic.modify_pin', 'schematic.modify_net_label',
+	'schematic.modify_net_marker',
 	'schematic.create_net_flag', 'schematic.create_net_port', 'schematic.create_net_label',
 	'schematic.connect_net', 'schematic.create_wire', 'schematic.connect',
 	'schematic.auto_layout', 'schematic.auto_route',

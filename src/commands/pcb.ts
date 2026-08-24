@@ -1,5 +1,6 @@
 import { primitiveSnapshot, stateString, toPlainData } from '../utils/eda';
 import {
+	asRecord,
 	CommandError,
 	optionalBoolean,
 	optionalInteger,
@@ -12,39 +13,112 @@ import {
 } from '../utils/validation';
 
 const COMPONENT_PROPERTIES = [
-	'PrimitiveId', 'Designator', 'Name', 'Layer', 'X', 'Y', 'Rotation', 'PrimitiveLock',
+	'PrimitiveId', 'PrimitiveType', 'Component', 'Footprint', 'Designator', 'Name',
+	'Layer', 'X', 'Y', 'Rotation', 'PrimitiveLock', 'AddIntoBom', 'Model3D', 'Pads',
+	'UniqueId', 'Manufacturer', 'ManufacturerId', 'Supplier', 'SupplierId', 'OtherProperty',
 ] as const;
 const PAD_PROPERTIES = [
-	'PrimitiveId', 'ParentComponentPrimitiveId', 'PadNumber', 'Net', 'Layer', 'X', 'Y',
-	'HoleDiameter', 'Diameter', 'Shape',
+	'PrimitiveId', 'PrimitiveType', 'ParentComponentPrimitiveId', 'PadNumber', 'Net',
+	'Layer', 'X', 'Y', 'Rotation', 'Pad', 'Hole', 'HoleOffsetX', 'HoleOffsetY',
+	'HoleRotation', 'Metallization', 'PadType', 'SpecialPad',
+	'SolderMaskAndPasteMaskExpansion', 'HeatWelding', 'PrimitiveLock',
 ] as const;
 const TRACK_PROPERTIES = [
 	'PrimitiveId', 'PrimitiveType', 'Net', 'Layer', 'StartX', 'StartY', 'EndX', 'EndY',
-	'LineWidth', 'Polygon', 'PrimitiveLock',
+	'ArcAngle', 'InteractiveMode', 'LineWidth', 'Polygon', 'PrimitiveLock',
 ] as const;
 const VIA_PROPERTIES = [
 	'PrimitiveId', 'Net', 'X', 'Y', 'HoleDiameter', 'Diameter', 'ViaType', 'PrimitiveLock',
+	'DesignRuleBlindViaName', 'SolderMaskExpansion',
+] as const;
+const ATTRIBUTE_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'ParentPrimitiveId', 'Layer', 'X', 'Y', 'Key',
+	'Value', 'KeyVisible', 'ValueVisible', 'FontFamily', 'FontSize', 'LineWidth',
+	'AlignMode', 'Rotation', 'Reverse', 'Expansion', 'Mirror', 'PrimitiveLock',
+] as const;
+const REGION_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'Layer', 'ComplexPolygon', 'RuleType', 'RegionName',
+	'LineWidth', 'PrimitiveLock',
+] as const;
+const POUR_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'Net', 'Layer', 'ComplexPolygon', 'PourFillMethod',
+	'PreserveSilos', 'PourName', 'PourPriority', 'LineWidth', 'PrimitiveLock',
+] as const;
+const POURED_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'PourPrimitiveId', 'PourFills',
+] as const;
+const FILL_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'Net', 'Layer', 'ComplexPolygon', 'FillMode',
+	'LineWidth', 'PrimitiveLock',
+] as const;
+const DIMENSION_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'DimensionType', 'CoordinateSet', 'Layer', 'Unit',
+	'LineWidth', 'Precision', 'TextFollow', 'PrimitiveLock',
+] as const;
+const IMAGE_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'X', 'Y', 'ComplexPolygon', 'Layer', 'Width', 'Height',
+	'Rotation', 'HorizonMirror', 'PrimitiveLock',
+] as const;
+const STRING_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'Layer', 'X', 'Y', 'Text', 'FontFamily', 'FontSize',
+	'LineWidth', 'AlignMode', 'Rotation', 'Reverse', 'Expansion', 'Mirror', 'PrimitiveLock',
 ] as const;
 
 export async function getPcbInfo(): Promise<Record<string, unknown>> {
 	const components = await eda.pcb_PrimitiveComponent.getAll();
+	const componentData = await Promise.all(components.map(async component => ({
+		...primitiveSnapshot(component, COMPONENT_PROPERTIES),
+		bbox: toPlainData(await eda.pcb_Primitive.getPrimitivesBBox([component])),
+	})));
 	const componentPads = await Promise.all(components.map(component => component.getAllPins()));
 	const freePads = await eda.pcb_PrimitivePad.getAll();
-	const [lines, arcs, polylines, vias, layers, nets] = await Promise.all([
+	const [
+		lines, arcs, polylines, vias, attributes, regions, pours, poured, fills,
+		dimensions, images, strings, layers, nets,
+	] = await Promise.all([
 		 eda.pcb_PrimitiveLine.getAll(),
-		eda.pcb_PrimitiveArc.getAll(),
-		eda.pcb_PrimitivePolyline.getAll(),
+		 eda.pcb_PrimitiveArc.getAll(),
+		 eda.pcb_PrimitivePolyline.getAll(),
 		 eda.pcb_PrimitiveVia.getAll(),
+		 eda.pcb_PrimitiveAttribute.getAll(),
+		 eda.pcb_PrimitiveRegion.getAll(),
+		 eda.pcb_PrimitivePour.getAll(),
+		 eda.pcb_PrimitivePoured.getAll(),
+		 eda.pcb_PrimitiveFill.getAll(),
+		 eda.pcb_PrimitiveDimension.getAll(),
+		 eda.pcb_PrimitiveImage.getAll(),
+		 eda.pcb_PrimitiveString.getAll(),
 		 eda.pcb_Layer.getAllLayers(),
 		 eda.pcb_Net.getAllNets(),
 	]);
 	return {
-		components: components.map(component => primitiveSnapshot(component, COMPONENT_PROPERTIES)),
+		components: componentData,
 		pads: [...freePads, ...componentPads.flat()].map(pad => primitiveSnapshot(pad, PAD_PROPERTIES)),
 		tracks: [...lines, ...arcs, ...polylines].map(track => primitiveSnapshot(track, TRACK_PROPERTIES)),
 		vias: vias.map(via => primitiveSnapshot(via, VIA_PROPERTIES)),
+		attributes: attributes.map(value => primitiveSnapshot(value, ATTRIBUTE_PROPERTIES)),
+		regions: regions.map(value => primitiveSnapshot(value, REGION_PROPERTIES)),
+		pours: pours.map(value => primitiveSnapshot(value, POUR_PROPERTIES)),
+		poured: poured.map(value => primitiveSnapshot(value, POURED_PROPERTIES)),
+		fills: fills.map(value => primitiveSnapshot(value, FILL_PROPERTIES)),
+		dimensions: dimensions.map(value => primitiveSnapshot(value, DIMENSION_PROPERTIES)),
+		images: images.map(value => primitiveSnapshot(value, IMAGE_PROPERTIES)),
+		strings: strings.map(value => primitiveSnapshot(value, STRING_PROPERTIES)),
 		layers: toPlainData(layers),
 		nets: toPlainData(nets),
+	};
+}
+
+export async function getPcbPrimitivesBBox(
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const primitiveIds = optionalStringArray(params, 'primitive_ids') ?? [];
+	if (primitiveIds.length === 0) {
+		throw new CommandError('INVALID_PARAMS', 'primitive_ids must not be empty');
+	}
+	return {
+		primitive_ids: primitiveIds,
+		bbox: toPlainData(await eda.pcb_Primitive.getPrimitivesBBox(primitiveIds)),
 	};
 }
 
@@ -91,6 +165,12 @@ export async function modifyPcbComponent(
 		addIntoBom?: boolean;
 		designator?: string;
 		name?: string;
+		uniqueId?: string;
+		manufacturer?: string;
+		manufacturerId?: string;
+		supplier?: string;
+		supplierId?: string;
+		otherProperty?: Record<string, string | number | boolean>;
 	} = {};
 	const layer = optionalNumber(params, 'layer');
 	const x = optionalNumber(params, 'x');
@@ -108,6 +188,19 @@ export async function modifyPcbComponent(
 		property.designator = requiredString(params, 'new_reference');
 	}
 	if (params.name !== undefined) property.name = requiredString(params, 'name');
+	for (const [source, target] of [
+		['unique_id', 'uniqueId'], ['manufacturer', 'manufacturer'],
+		['manufacturer_id', 'manufacturerId'], ['supplier', 'supplier'],
+		['supplier_id', 'supplierId'],
+	] as const) {
+		if (params[source] !== undefined) property[target] = requiredString(params, source);
+	}
+	if (params.other_property !== undefined) {
+		property.otherProperty = asRecord(params.other_property, 'other_property') as Record<
+			string,
+			string | number | boolean
+		>;
+	}
 	if (Object.keys(property).length === 0) {
 		throw new CommandError('INVALID_PARAMS', 'At least one component property is required');
 	}
@@ -156,7 +249,9 @@ export async function routePcbNet(
 		optimization: strategy === 'fast'
 			? EPCB_AutoRoutingOptimization.FASTER
 			: EPCB_AutoRoutingOptimization.COMPLETION,
-		cornerStyle: EPCB_AutoRoutingCornerStyle.DEGREE_45,
+		cornerStyle: pcbCornerStyle(params),
+		existingPrimitiveMode: enumPcbExistingPrimitiveMode(params),
+		layers: optionalNumberArray(params, 'layers') as TPCB_LayersOfCopper[] | undefined,
 	});
 	return toPlainData(result);
 }
@@ -177,8 +272,41 @@ export async function autoRoutePcb(
 		optimization: strategy === 'fast'
 			? EPCB_AutoRoutingOptimization.FASTER
 			: EPCB_AutoRoutingOptimization.COMPLETION,
-		cornerStyle: EPCB_AutoRoutingCornerStyle.DEGREE_45,
+		cornerStyle: pcbCornerStyle(params),
+		existingPrimitiveMode: enumPcbExistingPrimitiveMode(params),
+		layers: optionalNumberArray(params, 'layers') as TPCB_LayersOfCopper[] | undefined,
 	}));
+}
+
+function enumPcbExistingPrimitiveMode(
+	params: Record<string, unknown>,
+): EPCB_AutoRoutingExistingPrimitiveMode {
+	const value = optionalString(params, 'existing_primitive_mode', 'keep');
+	if (value === 'keep') return EPCB_AutoRoutingExistingPrimitiveMode.KEEP;
+	if (value === 'remove') return EPCB_AutoRoutingExistingPrimitiveMode.REMOVE;
+	throw new CommandError(
+		'INVALID_PARAMS',
+		'existing_primitive_mode must be keep or remove',
+	);
+}
+
+function pcbCornerStyle(params: Record<string, unknown>): EPCB_AutoRoutingCornerStyle {
+	const value = optionalInteger(params, 'corner_style', 45, 45, 90);
+	if (value === 45) return EPCB_AutoRoutingCornerStyle.DEGREE_45;
+	if (value === 90) return EPCB_AutoRoutingCornerStyle.DEGREE_90;
+	throw new CommandError('INVALID_PARAMS', 'corner_style must be 45 or 90');
+}
+
+function optionalNumberArray(
+	params: Record<string, unknown>,
+	key: string,
+): number[] | undefined {
+	const value = params[key];
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value) || value.some(item => typeof item !== 'number' || !Number.isFinite(item))) {
+		throw new CommandError('INVALID_PARAMS', `${key} must be an array of finite numbers`);
+	}
+	return value as number[];
 }
 
 export async function autoLayoutPcb(): Promise<unknown> {
@@ -294,8 +422,13 @@ export async function createPcbVia(
 		requiredNumber(params, 'hole_diameter'),
 		requiredNumber(params, 'diameter'),
 		optionalInteger(params, 'via_type', 0, 0, 2) as EPCB_PrimitiveViaType,
-		undefined,
-		undefined,
+		params.design_rule_blind_via_name === undefined
+			? undefined
+			: optionalString(params, 'design_rule_blind_via_name', ''),
+		params.solder_mask_expansion === undefined
+			? undefined
+			: (asRecord(params.solder_mask_expansion, 'solder_mask_expansion') as unknown as
+				IPCB_PrimitiveSolderMaskAndPasteMaskExpansion),
 		optionalBoolean(params, 'locked', false),
 	);
 	if (!via) {
@@ -316,6 +449,8 @@ export async function modifyPcbVia(
 		diameter?: number;
 		viaType?: EPCB_PrimitiveViaType;
 		primitiveLock?: boolean;
+		designRuleBlindViaName?: string | null;
+		solderMaskExpansion?: IPCB_PrimitiveSolderMaskAndPasteMaskExpansion | null;
 	} = {};
 	if (params.net !== undefined) property.net = optionalString(params, 'net', '');
 	const x = optionalNumber(params, 'x');
@@ -331,6 +466,17 @@ export async function modifyPcbVia(
 	}
 	if (params.locked !== undefined) {
 		property.primitiveLock = optionalBoolean(params, 'locked', false);
+	}
+	if (params.design_rule_blind_via_name !== undefined) {
+		property.designRuleBlindViaName = params.design_rule_blind_via_name === null
+			? null
+			: requiredString(params, 'design_rule_blind_via_name');
+	}
+	if (params.solder_mask_expansion !== undefined) {
+		property.solderMaskExpansion = params.solder_mask_expansion === null
+			? null
+			: (asRecord(params.solder_mask_expansion, 'solder_mask_expansion') as unknown as
+				IPCB_PrimitiveSolderMaskAndPasteMaskExpansion);
 	}
 	if (Object.keys(property).length === 0) {
 		throw new CommandError('INVALID_PARAMS', 'At least one via property is required');

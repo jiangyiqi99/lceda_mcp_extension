@@ -23,16 +23,47 @@ import {
 
 const COMPONENT_PROPERTIES = [
 	'PrimitiveId', 'PrimitiveType', 'ComponentType', 'Designator', 'Name', 'X', 'Y',
-	'Rotation', 'Mirror', 'Net', 'AddIntoBom', 'AddIntoPcb',
+	'Rotation', 'Mirror', 'Net', 'AddIntoBom', 'AddIntoPcb', 'Component', 'SubPartName',
+	'Symbol', 'Footprint', 'UniqueId', 'Manufacturer', 'ManufacturerId', 'Supplier',
+	'SupplierId', 'OtherProperty',
 ] as const;
 const PIN_PROPERTIES = [
-	'PrimitiveId', 'PinNumber', 'PinName', 'X', 'Y', 'Net', 'NoConnected',
+	'PrimitiveId', 'PrimitiveType', 'PinNumber', 'PinName', 'X', 'Y', 'Rotation',
+	'PinLength', 'PinColor', 'PinShape', 'NoConnected', 'OtherProperty',
 ] as const;
 const WIRE_PROPERTIES = [
 	'PrimitiveId', 'Line', 'Net', 'Color', 'LineWidth', 'LineType',
 ] as const;
 const ATTRIBUTE_PROPERTIES = [
-	'PrimitiveId', 'PrimitiveType', 'X', 'Y', 'Net', 'Key', 'Value',
+	'PrimitiveId', 'PrimitiveType', 'X', 'Y', 'Rotation', 'Color', 'FontName',
+	'FontSize', 'Bold', 'Italic', 'UnderLine', 'AlignMode', 'FillColor', 'Key', 'Value',
+	'KeyVisible', 'ValueVisible', 'ParentPrimitiveId',
+] as const;
+const ARC_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'StartX', 'StartY', 'ReferenceX', 'ReferenceY',
+	'EndX', 'EndY', 'Color', 'FillColor', 'LineWidth', 'LineType',
+] as const;
+const BUS_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'BusName', 'Line', 'Color', 'LineWidth', 'LineType',
+] as const;
+const CIRCLE_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'CenterX', 'CenterY', 'Radius', 'Color', 'FillColor',
+	'LineWidth', 'LineType', 'FillStyle',
+] as const;
+const POLYGON_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'Line', 'Color', 'FillColor', 'LineWidth', 'LineType',
+] as const;
+const RECTANGLE_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'TopLeftX', 'TopLeftY', 'Width', 'Height',
+	'CornerRadius', 'Rotation', 'Color', 'FillColor', 'LineWidth', 'LineType', 'FillStyle',
+] as const;
+const TEXT_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'X', 'Y', 'Content', 'Rotation', 'TextColor',
+	'FontName', 'FontSize', 'Bold', 'Italic', 'UnderLine', 'AlignMode',
+] as const;
+const OBJECT_PROPERTIES = [
+	'PrimitiveId', 'PrimitiveType', 'Content', 'StartX', 'StartY', 'Width', 'Height',
+	'Rotation', 'Mirror', 'FileName',
 ] as const;
 
 type Point = [number, number];
@@ -40,17 +71,64 @@ type Segment = [Point, Point];
 
 export async function getSchematicInfo(): Promise<Record<string, unknown>> {
 	const components = await eda.sch_PrimitiveComponent.getAll(undefined, false);
-	const componentData = await Promise.all(components.map(async (component) => ({
-		...primitiveSnapshot(component, COMPONENT_PROPERTIES),
-		pins: (await component.getAllPins() ?? []).map(pin => primitiveSnapshot(pin, PIN_PROPERTIES)),
-	})));
-	const wires = await eda.sch_PrimitiveWire.getAll();
-	const nets = await eda.sch_Net.getCurrentProjectAllNets();
+	const componentData = await Promise.all(components.map(async (component) => {
+		const [pins, bbox] = await Promise.all([
+			component.getAllPins(),
+			eda.sch_Primitive.getPrimitivesBBox([component]),
+		]);
+		return {
+			...primitiveSnapshot(component, COMPONENT_PROPERTIES),
+			bbox: toPlainData(bbox),
+			pins: (pins ?? []).map(pin => pinSnapshot(pin, bbox)),
+		};
+	}));
+	const [
+		wires, attributes, arcs, buses, circles, polygons, rectangles, texts, objects,
+		nets, symbolPins,
+	] =
+		await Promise.all([
+			eda.sch_PrimitiveWire.getAll(),
+			eda.sch_PrimitiveAttribute.getAll(),
+			eda.sch_PrimitiveArc.getAll(),
+			eda.sch_PrimitiveBus.getAll(),
+			eda.sch_PrimitiveCircle.getAll(),
+			eda.sch_PrimitivePolygon.getAll(),
+			eda.sch_PrimitiveRectangle.getAll(),
+			eda.sch_PrimitiveText.getAll(),
+			eda.sch_PrimitiveObject.getAll(),
+			eda.sch_Net.getCurrentProjectAllNets(),
+			eda.sch_PrimitivePin.getAll(),
+		]);
+	const attributeData = attributes.map(attribute => primitiveSnapshot(attribute, ATTRIBUTE_PROPERTIES));
+	const componentPins = componentData.flatMap(component => component.pins);
+	const symbolPinData = symbolPins.map(pin => pinSnapshot(pin));
 	return {
 		components: componentData,
-		pins: componentData.flatMap(component => component.pins),
+		pins: [...componentPins, ...symbolPinData],
+		symbol_pins: symbolPinData,
+		attributes: attributeData,
+		net_labels: attributeData.filter(attribute => !attribute.parentPrimitiveId),
 		nets: toPlainData(nets),
 		wires: wires.map(wire => primitiveSnapshot(wire, WIRE_PROPERTIES)),
+		graphics: {
+			arcs: arcs.map(value => primitiveSnapshot(value, ARC_PROPERTIES)),
+			buses: buses.map(value => primitiveSnapshot(value, BUS_PROPERTIES)),
+			circles: circles.map(value => primitiveSnapshot(value, CIRCLE_PROPERTIES)),
+			polygons: polygons.map(value => primitiveSnapshot(value, POLYGON_PROPERTIES)),
+			rectangles: rectangles.map(value => primitiveSnapshot(value, RECTANGLE_PROPERTIES)),
+			texts: texts.map(value => primitiveSnapshot(value, TEXT_PROPERTIES)),
+			objects: objects.map(value => primitiveSnapshot(value, OBJECT_PROPERTIES)),
+		},
+	};
+}
+
+export async function getSchematicPrimitivesBBox(
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const primitiveIds = requiredStringArray(params, 'primitive_ids');
+	return {
+		primitive_ids: primitiveIds,
+		bbox: toPlainData(await eda.sch_Primitive.getPrimitivesBBox(primitiveIds)),
 	};
 }
 
@@ -72,6 +150,11 @@ export async function addSchematicComponent(
 		reference,
 		x,
 		y,
+		optionalString(definition, 'sub_part_name', '') || undefined,
+		optionalNumber(definition, 'rotation', 0),
+		optionalBoolean(definition, 'mirror', false),
+		optionalBoolean(definition, 'add_into_bom', true),
+		optionalBoolean(definition, 'add_into_pcb', true),
 	);
 	return placed.component;
 }
@@ -122,6 +205,11 @@ export async function placeSchematicComponent(
 		requiredString(params, 'reference'),
 		requiredNumber(params, 'x'),
 		requiredNumber(params, 'y'),
+		optionalString(params, 'sub_part_name', '') || undefined,
+		optionalNumber(params, 'rotation', 0),
+		optionalBoolean(params, 'mirror', false),
+		optionalBoolean(params, 'add_into_bom', true),
+		optionalBoolean(params, 'add_into_pcb', true),
 	);
 }
 
@@ -139,6 +227,12 @@ export async function modifySchematicComponent(
 		name?: string;
 		addIntoBom?: boolean;
 		addIntoPcb?: boolean;
+		uniqueId?: string;
+		manufacturer?: string;
+		manufacturerId?: string;
+		supplier?: string;
+		supplierId?: string;
+		otherProperty?: Record<string, string | number | boolean>;
 	} = {};
 	const x = optionalNumber(params, 'x');
 	const y = optionalNumber(params, 'y');
@@ -156,6 +250,19 @@ export async function modifySchematicComponent(
 	}
 	if (params.add_into_pcb !== undefined) {
 		property.addIntoPcb = optionalBoolean(params, 'add_into_pcb', true);
+	}
+	for (const [source, target] of [
+		['unique_id', 'uniqueId'], ['manufacturer', 'manufacturer'],
+		['manufacturer_id', 'manufacturerId'], ['supplier', 'supplier'],
+		['supplier_id', 'supplierId'],
+	] as const) {
+		if (params[source] !== undefined) property[target] = requiredString(params, source);
+	}
+	if (params.other_property !== undefined) {
+		property.otherProperty = asRecord(params.other_property, 'other_property') as Record<
+			string,
+			string | number | boolean
+		>;
 	}
 	if (Object.keys(property).length === 0) {
 		throw new CommandError('INVALID_PARAMS', 'At least one component property is required');
@@ -252,17 +359,73 @@ export async function modifySchematicWire(
 	return primitiveSnapshot(wire, WIRE_PROPERTIES);
 }
 
-export async function setSchematicPinNoConnect(
+export async function modifySchematicPin(
 	params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-	const address = parsePinAddress(requiredString(params, 'pin'));
-	const pin = await findPin(address);
-	const updated = await eda.sch_PrimitivePin.modify(
-		pin,
-		{ noConnected: optionalBoolean(params, 'no_connected', true) },
-	);
-	if (!updated) throw new CommandError('PIN_MODIFY_FAILED', params.pin as string);
-	return primitiveSnapshot(updated, PIN_PROPERTIES);
+	const primitiveId = requiredString(params, 'primitive_id');
+	const pin = await eda.sch_PrimitivePin.get(primitiveId);
+	if (!pin) {
+		throw new CommandError(
+			'INVALID_SYMBOL_PIN',
+			`${primitiveId} is not a standalone pin in the active symbol editor`,
+		);
+	}
+	const property: {
+		x?: number;
+		y?: number;
+		pinNumber?: string;
+		pinName?: string;
+		rotation?: number;
+		pinLength?: number;
+		pinColor?: string | null;
+		pinShape?: ESCH_PrimitivePinShape;
+		pinType?: ESCH_PrimitivePinType;
+		noConnected?: boolean;
+		otherProperty?: Record<string, string | number | boolean>;
+	} = {};
+	for (const [source, target] of [
+		['x', 'x'], ['y', 'y'], ['rotation', 'rotation'], ['pin_length', 'pinLength'],
+	] as const) {
+		const value = optionalNumber(params, source);
+		if (value !== undefined) property[target] = value;
+	}
+	if (params.pin_number !== undefined) property.pinNumber = requiredString(params, 'pin_number');
+	if (params.pin_name !== undefined) property.pinName = requiredString(params, 'pin_name');
+	if (params.pin_color !== undefined) {
+		property.pinColor = params.pin_color === null ? null : requiredString(params, 'pin_color');
+	}
+	if (params.pin_shape !== undefined) {
+		property.pinShape = enumString(
+			params,
+			'pin_shape',
+			['None', 'Inverted', 'Clock', 'Inverted Clock'] as const,
+		) as ESCH_PrimitivePinShape;
+	}
+	if (params.pin_type !== undefined) {
+		property.pinType = enumString(
+			params,
+			'pin_type',
+			[
+				'IN', 'OUT', 'BI', 'Passive', 'Open Collector', 'Open Emitter',
+				'Power', 'Ground', 'HIZ', 'Terminator', 'Undefined',
+			] as const,
+		) as ESCH_PrimitivePinType;
+	}
+	if (params.no_connected !== undefined) {
+		property.noConnected = optionalBoolean(params, 'no_connected', false);
+	}
+	if (params.other_property !== undefined) {
+		property.otherProperty = asRecord(params.other_property, 'other_property') as Record<
+			string,
+			string | number | boolean
+		>;
+	}
+	if (Object.keys(property).length === 0) {
+		throw new CommandError('INVALID_PARAMS', 'At least one pin property is required');
+	}
+	const updated = await eda.sch_PrimitivePin.modify(pin, property);
+	if (!updated) throw new CommandError('PIN_MODIFY_FAILED', primitiveId);
+	return pinSnapshot(updated);
 }
 
 export async function clearSchematic(
@@ -340,6 +503,46 @@ export async function createSchematicNetPort(
 	return primitiveSnapshot(port, COMPONENT_PROPERTIES);
 }
 
+export async function modifySchematicNetMarker(
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const primitiveId = requiredString(params, 'primitive_id');
+	const marker = await eda.sch_PrimitiveComponent.get(primitiveId);
+	if (!marker) throw new CommandError('INVALID_NET_MARKER', `${primitiveId} was not found`);
+	const componentType = marker.getState_ComponentType();
+	if (!['netport', 'netflag', 'offPageConnector', 'diffPairsFlag'].includes(componentType)) {
+		throw new CommandError('INVALID_NET_MARKER', `${primitiveId} is ${componentType}`);
+	}
+	const asyncMarker = marker.toAsync();
+	let changes = 0;
+	const x = optionalNumber(params, 'x');
+	const y = optionalNumber(params, 'y');
+	const side = params.side === undefined
+		? undefined
+		: enumString(params, 'side', ['left', 'right', 'top', 'bottom'] as const);
+	const rotation = optionalNumber(params, 'rotation');
+	if (x !== undefined) { asyncMarker.setState_X(x); changes += 1; }
+	if (y !== undefined) { asyncMarker.setState_Y(y); changes += 1; }
+	if (side !== undefined) {
+		asyncMarker.setState_Rotation({ left: 0, right: 180, top: 90, bottom: 270 }[side]);
+		changes += 1;
+	}
+	if (rotation !== undefined) { asyncMarker.setState_Rotation(rotation); changes += 1; }
+	if (params.mirror !== undefined) {
+		asyncMarker.setState_Mirror(optionalBoolean(params, 'mirror', false));
+		changes += 1;
+	}
+	if (params.net !== undefined) {
+		asyncMarker.setState_Net(requiredString(params, 'net'));
+		changes += 1;
+	}
+	if (changes === 0) {
+		throw new CommandError('INVALID_PARAMS', 'At least one net marker property is required');
+	}
+	const updated = await asyncMarker.done();
+	return primitiveSnapshot(updated, COMPONENT_PROPERTIES);
+}
+
 export async function createSchematicNetLabel(
 	params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -351,7 +554,29 @@ export async function createSchematicNetLabel(
 	if (!label) {
 		throw new CommandError('NET_LABEL_CREATE_FAILED', 'JLCEDA did not create the net label');
 	}
-	return primitiveSnapshot(label, ATTRIBUTE_PROPERTIES);
+	const property = netLabelProperty(params, false);
+	const updated = Object.keys(property).length === 0
+		? label
+		: await eda.sch_PrimitiveAttribute.modify(label, property);
+	if (!updated) {
+		throw new CommandError('NET_LABEL_MODIFY_FAILED', label.getState_PrimitiveId());
+	}
+	return primitiveSnapshot(updated, ATTRIBUTE_PROPERTIES);
+}
+
+export async function modifySchematicNetLabel(
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const primitiveId = requiredString(params, 'primitive_id');
+	const label = await eda.sch_PrimitiveAttribute.get(primitiveId);
+	if (!label) throw new CommandError('INVALID_NET_LABEL', `${primitiveId} was not found`);
+	const property = netLabelProperty(params, true);
+	if (Object.keys(property).length === 0) {
+		throw new CommandError('INVALID_PARAMS', 'At least one net label property is required');
+	}
+	const updated = await eda.sch_PrimitiveAttribute.modify(label, property);
+	if (!updated) throw new CommandError('NET_LABEL_MODIFY_FAILED', primitiveId);
+	return primitiveSnapshot(updated, ATTRIBUTE_PROPERTIES);
 }
 
 export async function connectSchematicNet(
@@ -365,18 +590,42 @@ export async function connectSchematicNet(
 		['port', 'power', 'ground', 'analog_ground', 'protect_ground', 'label'] as const,
 		'port',
 	);
+	const requestedSide = enumString(
+		params,
+		'side',
+		['auto', 'left', 'right', 'top', 'bottom'] as const,
+		'auto',
+	);
+	const portDirection = enumString(params, 'direction', ['IN', 'OUT', 'BI'] as const, 'BI');
 	const created: Record<string, unknown>[] = [];
 	for (const address of pins) {
-		const pin = await findPin(parsePinAddress(address));
+		const parsed = parsePinAddress(address);
+		const component = await findComponent(parsed.reference);
+		const pin = await findPin(parsed);
 		const x = requireCoordinate(pin, 'X');
 		const y = requireCoordinate(pin, 'Y');
+		const bbox = await eda.sch_Primitive.getPrimitivesBBox([component]);
+		const side = requestedSide === 'auto' && bbox
+			? classifyPointSide(x, y, bbox)
+			: requestedSide === 'auto' ? 'left' : requestedSide;
+		const rotation = { left: 0, right: 180, top: 90, bottom: 270 }[side];
 		if (style === 'label') {
 			const label = await eda.sch_PrimitiveAttribute.createNetLabel(x, y, net);
 			if (!label) throw new CommandError('NET_LABEL_CREATE_FAILED', address);
-			created.push(primitiveSnapshot(label, ATTRIBUTE_PROPERTIES));
+			const updated = await eda.sch_PrimitiveAttribute.modify(
+				label,
+				netLabelProperty({ side }, false),
+			);
+			created.push(primitiveSnapshot(updated ?? label, ATTRIBUTE_PROPERTIES));
 		}
 		else if (style === 'port') {
-			const port = await eda.sch_PrimitiveComponent.createNetPort('BI', net, x, y);
+			const port = await eda.sch_PrimitiveComponent.createNetPort(
+				portDirection,
+				net,
+				x,
+				y,
+				rotation,
+			);
 			if (!port) throw new CommandError('NET_PORT_CREATE_FAILED', address);
 			created.push(primitiveSnapshot(port, COMPONENT_PROPERTIES));
 		}
@@ -387,7 +636,7 @@ export async function connectSchematicNet(
 				analog_ground: 'AnalogGround',
 				protect_ground: 'ProtectGround',
 			}[style] as 'Power' | 'Ground' | 'AnalogGround' | 'ProtectGround';
-			const flag = await eda.sch_PrimitiveComponent.createNetFlag(kind, net, x, y);
+			const flag = await eda.sch_PrimitiveComponent.createNetFlag(kind, net, x, y, rotation);
 			if (!flag) throw new CommandError('NET_FLAG_CREATE_FAILED', address);
 			created.push(primitiveSnapshot(flag, COMPONENT_PROPERTIES));
 		}
@@ -418,6 +667,11 @@ async function createSchematicComponent(
 	reference: string,
 	x: number,
 	y: number,
+	subPartName?: string,
+	rotation = 0,
+	mirror = false,
+	addIntoBom = true,
+	addIntoPcb = true,
 ): Promise<{
 	library_uuid: string;
 	device_uuid: string;
@@ -427,6 +681,11 @@ async function createSchematicComponent(
 		{ libraryUuid, uuid: deviceUuid },
 		x,
 		y,
+		subPartName,
+		rotation,
+		mirror,
+		addIntoBom,
+		addIntoPcb,
 	);
 	if (!component) {
 		throw new CommandError('COMPONENT_CREATE_FAILED', `Could not create ${deviceUuid}`);
@@ -454,8 +713,10 @@ export async function connectSchematicPins(
 	const y1 = requireCoordinate(fromPin, 'Y');
 	const x2 = requireCoordinate(toPin, 'X');
 	const y2 = requireCoordinate(toPin, 'Y');
-	const fromNet = stateString(fromPin, 'Net')?.trim() || undefined;
-	const toNet = stateString(toPin, 'Net')?.trim() || undefined;
+	const [fromNet, toNet] = await Promise.all([
+		findWireNetAtPoint(x1, y1),
+		findWireNetAtPoint(x2, y2),
+	]);
 	if (fromNet && toNet && fromNet !== toNet) {
 		throw new CommandError('NET_CONFLICT', `${fromNet} cannot be joined to ${toNet}`);
 	}
@@ -489,12 +750,122 @@ export async function getSchematicNetlist(
 	return { format, netlist };
 }
 
-export async function autoLayoutSchematic(): Promise<unknown> {
-	return toPlainData(await eda.sch_Document.autoLayout());
+export async function autoLayoutSchematic(params: Record<string, unknown>): Promise<unknown> {
+	return toPlainData(await eda.sch_Document.autoLayout(schematicAutomationProps(params)));
 }
 
-export async function autoRouteSchematic(): Promise<unknown> {
-	return toPlainData(await eda.sch_Document.autoRouting());
+export async function autoRouteSchematic(params: Record<string, unknown>): Promise<unknown> {
+	return toPlainData(await eda.sch_Document.autoRouting(schematicAutomationProps(params)));
+}
+
+function schematicAutomationProps(params: Record<string, unknown>): {
+	uuids?: string[];
+	netlist?: { component: Record<string, { pinInfoMap: Record<string, {
+		name: string;
+		number: string;
+		net: string;
+		props: { 'Pin Number': string };
+	}> }> };
+	designatorDeviceTypeMap?: Record<string, 'resistor' | 'capacitor' | 'inductive' |
+		'diode' | 'triode' | 'oscillator' | 'chip' | 'otherDevice'>;
+} | undefined {
+	const props: Record<string, unknown> = {};
+	if (params.primitive_ids !== undefined) {
+		props.uuids = requiredStringArray(params, 'primitive_ids', { allowEmpty: true });
+	}
+	if (params.netlist !== undefined) props.netlist = asRecord(params.netlist, 'netlist');
+	if (params.device_types !== undefined) {
+		props.designatorDeviceTypeMap = asRecord(params.device_types, 'device_types');
+	}
+	return Object.keys(props).length === 0 ? undefined : props as ReturnType<typeof schematicAutomationProps>;
+}
+
+type BBox = { minX: number; minY: number; maxX: number; maxY: number };
+
+function pinSnapshot(pin: ISCH_PrimitivePin, bbox?: BBox): Record<string, unknown> {
+	const snapshot = primitiveSnapshot(pin, PIN_PROPERTIES);
+	const pinTypeGetter = Reflect.get(pin, 'getState_pinType');
+	if (typeof pinTypeGetter === 'function') {
+		snapshot.pinType = Reflect.apply(pinTypeGetter, pin, []);
+	}
+	if (bbox) snapshot.side = classifyPointSide(pin.getState_X(), pin.getState_Y(), bbox);
+	return snapshot;
+}
+
+function classifyPointSide(x: number, y: number, bbox: BBox): 'left' | 'right' | 'top' | 'bottom' {
+	const distances = [
+		['left', Math.abs(x - bbox.minX)],
+		['right', Math.abs(x - bbox.maxX)],
+		['top', Math.abs(y - bbox.minY)],
+		['bottom', Math.abs(y - bbox.maxY)],
+	] as const;
+	return [...distances].sort((a, b) => a[1] - b[1])[0][0];
+}
+
+function netLabelProperty(
+	params: Record<string, unknown>,
+	includePosition: boolean,
+): {
+	x?: number | null;
+	y?: number | null;
+	rotation?: number | null;
+	alignMode?: ESCH_PrimitiveTextAlignMode | null;
+	color?: string | null;
+	fontName?: string | null;
+	fontSize?: number | null;
+	bold?: boolean | null;
+	italic?: boolean | null;
+	underLine?: boolean | null;
+	fillColor?: string | null;
+	value?: string;
+	keyVisible?: boolean | null;
+	valueVisible?: boolean | null;
+} {
+	const property: ReturnType<typeof netLabelProperty> = {};
+	if (includePosition) {
+		const x = optionalNumber(params, 'x');
+		const y = optionalNumber(params, 'y');
+		if (x !== undefined) property.x = x;
+		if (y !== undefined) property.y = y;
+	}
+	const side = params.side === undefined
+		? undefined
+		: enumString(params, 'side', ['left', 'right', 'top', 'bottom'] as const);
+	if (side !== undefined) {
+		const placement = {
+			left: { rotation: 0, alignMode: 8 },
+			right: { rotation: 0, alignMode: 2 },
+			top: { rotation: 90, alignMode: 2 },
+			bottom: { rotation: 270, alignMode: 2 },
+		}[side];
+		property.rotation = placement.rotation;
+		property.alignMode = placement.alignMode as ESCH_PrimitiveTextAlignMode;
+	}
+	const rotation = optionalNumber(params, 'rotation');
+	if (rotation !== undefined) property.rotation = rotation;
+	if (params.align_mode !== undefined) {
+		property.alignMode = optionalInteger(params, 'align_mode', 2, 1, 9) as
+			ESCH_PrimitiveTextAlignMode;
+	}
+	const fontSize = optionalNumber(params, 'font_size');
+	if (fontSize !== undefined) property.fontSize = fontSize;
+	for (const [source, target] of [
+		['color', 'color'], ['font_name', 'fontName'], ['fill_color', 'fillColor'],
+	] as const) {
+		if (params[source] !== undefined) {
+			property[target] = params[source] === null ? null : requiredString(params, source);
+		}
+	}
+	for (const [source, target] of [
+		['bold', 'bold'], ['italic', 'italic'], ['under_line', 'underLine'],
+		['key_visible', 'keyVisible'], ['value_visible', 'valueVisible'],
+	] as const) {
+		if (params[source] !== undefined) {
+			property[target] = optionalBoolean(params, source, false);
+		}
+	}
+	if (params.net !== undefined) property.value = requiredString(params, 'net');
+	return property;
 }
 
 function generatedNetName(
@@ -545,6 +916,34 @@ function requireCoordinate(pin: unknown, property: 'X' | 'Y'): number {
 
 function flattenPoints(points: Point[]): number[] {
 	return points.flatMap(point => point);
+}
+
+async function findWireNetAtPoint(x: number, y: number): Promise<string | undefined> {
+	const nets = new Set<string>();
+	for (const wire of await eda.sch_PrimitiveWire.getAll()) {
+		const net = stateString(wire, 'Net')?.trim();
+		if (!net) continue;
+		if (lineToSegments(state(wire, 'Line')).some(segment => pointOnSegment([x, y], segment))) {
+			nets.add(net);
+		}
+	}
+	if (nets.size > 1) {
+		throw new CommandError(
+			'NET_CONFLICT',
+			`Pin at (${x}, ${y}) touches multiple nets: ${[...nets].join(', ')}`,
+		);
+	}
+	return nets.values().next().value as string | undefined;
+}
+
+function pointOnSegment([x, y]: Point, [a, b]: Segment): boolean {
+	if (a[0] === b[0]) {
+		return x === a[0] && y >= Math.min(a[1], b[1]) && y <= Math.max(a[1], b[1]);
+	}
+	if (a[1] === b[1]) {
+		return y === a[1] && x >= Math.min(a[0], b[0]) && x <= Math.max(a[0], b[0]);
+	}
+	return false;
 }
 
 async function validateWirePath(
