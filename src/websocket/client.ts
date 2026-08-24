@@ -1,5 +1,6 @@
 import {
 	CAPABILITIES,
+	COMMAND_TIMEOUT_MS,
 	HEARTBEAT_INTERVAL_MS,
 	RECONNECT_DELAY_MS,
 	WEBSOCKET_ID,
@@ -110,7 +111,13 @@ export class BrokerClient {
 		}
 
 		if (isRpcRequest(message)) {
-			await this.handleRequest(message.id, message.method, message.params);
+			// Some canvas mutations (notably the beta createNetLabel API) only
+			// settle after JLCEDA regains control from the WebSocket callback.
+			// Start the command on the next turn instead of keeping this callback
+			// open for the entire RPC lifetime.
+			setTimeout(() => {
+				void this.handleRequest(message.id, message.method, message.params);
+			}, 0);
 			return;
 		}
 
@@ -128,7 +135,7 @@ export class BrokerClient {
 		params: Record<string, unknown>,
 	): Promise<void> {
 		try {
-			const result = await this.dispatch(method, params);
+			const result = await this.dispatchWithTimeout(method, params);
 			this.send({ id, type: 'response', success: true, result });
 		}
 		catch (error: unknown) {
@@ -149,6 +156,29 @@ export class BrokerClient {
 					data: commandError.data,
 				},
 			});
+		}
+	}
+
+	private async dispatchWithTimeout(
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<unknown> {
+		let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_resolve, reject) => {
+			timeoutTimer = setTimeout(() => {
+				reject(new CommandError(
+					'EXTENSION_COMMAND_TIMEOUT',
+					`${method} did not complete within ${COMMAND_TIMEOUT_MS}ms`,
+					{ method, timeout_ms: COMMAND_TIMEOUT_MS },
+				));
+			}, COMMAND_TIMEOUT_MS);
+		});
+
+		try {
+			return await Promise.race([this.dispatch(method, params), timeout]);
+		}
+		finally {
+			if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
 		}
 	}
 
@@ -224,4 +254,3 @@ function createExtensionId(): string {
 		return `jlceda-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 	}
 }
-
