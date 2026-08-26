@@ -142,7 +142,7 @@ export async function placePcbComponent(
 	if (!updated) {
 		throw new CommandError('COMPONENT_MOVE_FAILED', `${reference} could not be moved`);
 	}
-	return primitiveSnapshot(updated, COMPONENT_PROPERTIES);
+	return componentPlacementResult(updated);
 }
 
 export async function modifyPcbComponent(
@@ -211,7 +211,78 @@ export async function modifyPcbComponent(
 	if (!updated) {
 		throw new CommandError('COMPONENT_MODIFY_FAILED', `${reference} could not be modified`);
 	}
-	return primitiveSnapshot(updated, COMPONENT_PROPERTIES);
+	return componentPlacementResult(updated);
+}
+
+type BBox = { minX: number; minY: number; maxX: number; maxY: number };
+
+type ComponentOverlap = {
+	primitive_id: string;
+	reference?: string;
+	bbox: BBox;
+};
+
+type ComponentOverlapWarning = {
+	code: 'COMPONENT_OVERLAP';
+	message: string;
+	overlaps: ComponentOverlap[];
+};
+
+type ComponentPlacementResult = Record<string, unknown> & {
+	bbox: BBox | null;
+	overlaps: ComponentOverlap[];
+	warnings: ComponentOverlapWarning[];
+};
+
+/**
+ * Surface exact post-operation geometry and advisory collision data.  A collision
+ * never rolls back or rejects a successful user-requested placement.
+ */
+async function componentPlacementResult(
+	component: IPCB_PrimitiveComponent,
+): Promise<ComponentPlacementResult> {
+	const primitiveId = component.getState_PrimitiveId();
+	const [bbox, components] = await Promise.all([
+		eda.pcb_Primitive.getPrimitivesBBox([component]),
+		eda.pcb_PrimitiveComponent.getAll(),
+	]);
+	const candidates = components.filter(
+		candidate => candidate.getState_PrimitiveId() !== primitiveId,
+	);
+	const candidateBoxes = await Promise.all(candidates.map(async candidate => ({
+		candidate,
+		bbox: await eda.pcb_Primitive.getPrimitivesBBox([candidate]),
+	})));
+	const overlaps: ComponentOverlap[] = bbox
+		? candidateBoxes.flatMap(({ candidate, bbox: candidateBBox }) => {
+			if (!candidateBBox || !bboxesOverlap(bbox, candidateBBox)) return [];
+			const reference = stateString(candidate, 'Designator');
+			return [{
+				primitive_id: candidate.getState_PrimitiveId(),
+				...(reference ? { reference } : {}),
+				bbox: candidateBBox,
+			}];
+		})
+		: [];
+	const warnings: ComponentOverlapWarning[] = overlaps.length === 0 ? [] : [{
+		code: 'COMPONENT_OVERLAP',
+		message: `Component overlaps ${overlaps.length} existing PCB component(s)`,
+		overlaps,
+	}];
+	return {
+		...primitiveSnapshot(component, COMPONENT_PROPERTIES),
+		// This is the exact footprint primitive BBox from JLCEDA.
+		bbox: bbox ?? null,
+		overlaps,
+		warnings,
+	};
+}
+
+function bboxesOverlap(first: BBox, second: BBox): boolean {
+	return first.minX < second.maxX
+		&& first.maxX > second.minX
+		&& first.minY < second.maxY
+		&& first.maxY > second.minY;
 }
 
 export async function deletePcbComponents(

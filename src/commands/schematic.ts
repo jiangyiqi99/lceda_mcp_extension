@@ -274,7 +274,7 @@ export async function modifySchematicComponent(
 	if (!updated) {
 		throw new CommandError('COMPONENT_MODIFY_FAILED', `${reference} could not be modified`);
 	}
-	return primitiveSnapshot(updated, COMPONENT_PROPERTIES);
+	return componentPlacementResult(updated);
 }
 
 export async function deleteSchematicComponents(
@@ -675,7 +675,10 @@ async function createSchematicComponent(
 ): Promise<{
 	library_uuid: string;
 	device_uuid: string;
-	component: Record<string, unknown>;
+	component: ComponentPlacementResult;
+	bbox: BBox | null;
+	overlaps: ComponentOverlap[];
+	warnings: ComponentOverlapWarning[];
 }> {
 	const component = await eda.sch_PrimitiveComponent.create(
 		{ libraryUuid, uuid: deviceUuid },
@@ -694,11 +697,88 @@ async function createSchematicComponent(
 		component.getState_PrimitiveId(),
 		{ designator: reference },
 	);
+	const placement = await componentPlacementResult(updated ?? component);
 	return {
 		library_uuid: libraryUuid,
 		device_uuid: deviceUuid,
-		component: primitiveSnapshot(updated ?? component, COMPONENT_PROPERTIES),
+		component: placement,
+		// Keep feedback top-level for schematic.place_component while retaining it
+		// on component for the legacy schematic.add_component response.
+		bbox: placement.bbox,
+		overlaps: placement.overlaps,
+		warnings: placement.warnings,
 	};
+}
+
+type BBox = { minX: number; minY: number; maxX: number; maxY: number };
+
+type ComponentOverlap = {
+	primitive_id: string;
+	reference?: string;
+	bbox: BBox;
+};
+
+type ComponentOverlapWarning = {
+	code: 'COMPONENT_OVERLAP';
+	message: string;
+	overlaps: ComponentOverlap[];
+};
+
+type ComponentPlacementResult = Record<string, unknown> & {
+	bbox: BBox | null;
+	overlaps: ComponentOverlap[];
+	warnings: ComponentOverlapWarning[];
+};
+
+/**
+ * Returns placement geometry after a successful mutation.  Collision reporting is
+ * deliberately advisory: callers have already completed the requested operation.
+ */
+async function componentPlacementResult(
+	component: ISCH_PrimitiveComponent,
+): Promise<ComponentPlacementResult> {
+	const primitiveId = component.getState_PrimitiveId();
+	const [bbox, components] = await Promise.all([
+		eda.sch_Primitive.getPrimitivesBBox([component]),
+		eda.sch_PrimitiveComponent.getAll(undefined, false),
+	]);
+	const candidates = components.filter(
+		candidate => candidate.getState_PrimitiveId() !== primitiveId,
+	);
+	const candidateBoxes = await Promise.all(candidates.map(async candidate => ({
+		candidate,
+		bbox: await eda.sch_Primitive.getPrimitivesBBox([candidate]),
+	})));
+	const overlaps: ComponentOverlap[] = bbox
+		? candidateBoxes.flatMap(({ candidate, bbox: candidateBBox }) => {
+			if (!candidateBBox || !bboxesOverlap(bbox, candidateBBox)) return [];
+			const reference = stateString(candidate, 'Designator');
+			return [{
+				primitive_id: candidate.getState_PrimitiveId(),
+				...(reference ? { reference } : {}),
+				bbox: candidateBBox,
+			}];
+		})
+		: [];
+	const warnings: ComponentOverlapWarning[] = overlaps.length === 0 ? [] : [{
+		code: 'COMPONENT_OVERLAP',
+		message: `Component overlaps ${overlaps.length} existing schematic component(s)`,
+		overlaps,
+	}];
+	return {
+		...primitiveSnapshot(component, COMPONENT_PROPERTIES),
+		// This is the editor's primitive BBox, not an approximation derived from pins.
+		bbox: bbox ?? null,
+		overlaps,
+		warnings,
+	};
+}
+
+function bboxesOverlap(first: BBox, second: BBox): boolean {
+	return first.minX < second.maxX
+		&& first.maxX > second.minX
+		&& first.minY < second.maxY
+		&& first.maxY > second.minY;
 }
 
 export async function connectSchematicPins(
@@ -779,8 +859,6 @@ function schematicAutomationProps(params: Record<string, unknown>): {
 	}
 	return Object.keys(props).length === 0 ? undefined : props as ReturnType<typeof schematicAutomationProps>;
 }
-
-type BBox = { minX: number; minY: number; maxX: number; maxY: number };
 
 function pinSnapshot(pin: ISCH_PrimitivePin, bbox?: BBox): Record<string, unknown> {
 	const snapshot = primitiveSnapshot(pin, PIN_PROPERTIES);
