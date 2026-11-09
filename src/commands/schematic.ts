@@ -99,7 +99,13 @@ export async function getSchematicInfo(): Promise<Record<string, unknown>> {
 			eda.sch_Net.getCurrentProjectAllNets(),
 			eda.sch_PrimitivePin.getAll(),
 		]);
-	const attributeData = attributes.map(attribute => primitiveSnapshot(attribute, ATTRIBUTE_PROPERTIES));
+	const [attributeData, textData] = await Promise.all([
+		Promise.all(attributes.map(attribute => primitiveSnapshotWithBBox(
+			attribute,
+			ATTRIBUTE_PROPERTIES,
+		))),
+		Promise.all(texts.map(text => primitiveSnapshotWithBBox(text, TEXT_PROPERTIES))),
+	]);
 	const componentPins = componentData.flatMap(component => component.pins);
 	const symbolPinData = symbolPins.map(pin => pinSnapshot(pin));
 	return {
@@ -116,9 +122,19 @@ export async function getSchematicInfo(): Promise<Record<string, unknown>> {
 			circles: circles.map(value => primitiveSnapshot(value, CIRCLE_PROPERTIES)),
 			polygons: polygons.map(value => primitiveSnapshot(value, POLYGON_PROPERTIES)),
 			rectangles: rectangles.map(value => primitiveSnapshot(value, RECTANGLE_PROPERTIES)),
-			texts: texts.map(value => primitiveSnapshot(value, TEXT_PROPERTIES)),
+			texts: textData,
 			objects: objects.map(value => primitiveSnapshot(value, OBJECT_PROPERTIES)),
 		},
+	};
+}
+
+async function primitiveSnapshotWithBBox(
+	primitive: ISCH_Primitive,
+	properties: readonly string[],
+): Promise<Record<string, unknown>> {
+	return {
+		...primitiveSnapshot(primitive, properties),
+		bbox: toPlainData(await eda.sch_Primitive.getPrimitivesBBox([primitive])),
 	};
 }
 
@@ -129,6 +145,55 @@ export async function getSchematicPrimitivesBBox(
 	return {
 		primitive_ids: primitiveIds,
 		bbox: toPlainData(await eda.sch_Primitive.getPrimitivesBBox(primitiveIds)),
+	};
+}
+
+/**
+ * Checks every unordered pair of schematic components and textual primitives.
+ * This deliberately differs from placement feedback, which only checks one
+ * newly changed component against the rest of the sheet.
+ */
+export async function detectSchematicOverlaps(): Promise<Record<string, unknown>> {
+	const [components, attributes, texts] = await Promise.all([
+		eda.sch_PrimitiveComponent.getAll(undefined, false),
+		eda.sch_PrimitiveAttribute.getAll(),
+		eda.sch_PrimitiveText.getAll(),
+	]);
+	const candidates: SchematicOverlapCandidate[] = [
+		...components.map(primitive => ({ kind: 'component' as const, primitive })),
+		...attributes.map(primitive => ({ kind: 'attribute' as const, primitive })),
+		...texts.map(primitive => ({ kind: 'text' as const, primitive })),
+	];
+	const candidateBoxes = await Promise.all(candidates.map(async candidate => ({
+		...candidate,
+		bbox: await eda.sch_Primitive.getPrimitivesBBox([candidate.primitive]),
+	})));
+	const primitives: SchematicOverlapPrimitive[] = candidateBoxes.flatMap(candidate => (
+		candidate.bbox ? [{ ...candidate, bbox: candidate.bbox }] : []
+	));
+	const overlaps: SchematicOverlapPair[] = [];
+	for (let first = 0; first < primitives.length; first += 1) {
+		for (let second = first + 1; second < primitives.length; second += 1) {
+			const left = primitives[first];
+			const right = primitives[second];
+			if (!bboxesOverlap(left.bbox, right.bbox)) continue;
+			overlaps.push({
+				first: overlapItemSnapshot(left),
+				second: overlapItemSnapshot(right),
+			});
+		}
+	}
+	return {
+		has_overlap: overlaps.length > 0,
+		overlap_count: overlaps.length,
+		checked: {
+			components: components.length,
+			attributes: attributes.length,
+			texts: texts.length,
+			with_bbox: primitives.length,
+			without_bbox: candidates.length - primitives.length,
+		},
+		overlaps,
 	};
 }
 
@@ -678,6 +743,7 @@ async function createSchematicComponent(
 	component: ComponentPlacementResult;
 	bbox: BBox | null;
 	overlaps: ComponentOverlap[];
+	text_overlaps: TextOverlap[];
 	warnings: ComponentOverlapWarning[];
 }> {
 	const component = await eda.sch_PrimitiveComponent.create(
@@ -706,6 +772,7 @@ async function createSchematicComponent(
 		// on component for the legacy schematic.add_component response.
 		bbox: placement.bbox,
 		overlaps: placement.overlaps,
+		text_overlaps: placement.text_overlaps,
 		warnings: placement.warnings,
 	};
 }
@@ -718,17 +785,78 @@ type ComponentOverlap = {
 	bbox: BBox;
 };
 
+type TextOverlap = {
+	primitive_id: string;
+	kind: 'attribute' | 'text';
+	parent_primitive_id?: string;
+	key: string | null;
+	content: string | null;
+	bbox: BBox;
+};
+
+type SchematicOverlapKind = 'component' | 'attribute' | 'text';
+
+type SchematicOverlapCandidate = {
+	kind: SchematicOverlapKind;
+	primitive: ISCH_Primitive;
+};
+
+type SchematicOverlapPrimitive = SchematicOverlapCandidate & { bbox: BBox };
+
+type SchematicOverlapItem = {
+	kind: SchematicOverlapKind;
+	primitive_id: string;
+	reference?: string;
+	parent_primitive_id?: string;
+	key?: string;
+	content?: string;
+	bbox: BBox;
+};
+
+type SchematicOverlapPair = {
+	first: SchematicOverlapItem;
+	second: SchematicOverlapItem;
+};
+
 type ComponentOverlapWarning = {
-	code: 'COMPONENT_OVERLAP';
+	code: 'COMPONENT_OVERLAP' | 'TEXT_OVERLAP';
 	message: string;
-	overlaps: ComponentOverlap[];
+	overlaps: ComponentOverlap[] | TextOverlap[];
 };
 
 type ComponentPlacementResult = Record<string, unknown> & {
 	bbox: BBox | null;
 	overlaps: ComponentOverlap[];
+	text_overlaps: TextOverlap[];
 	warnings: ComponentOverlapWarning[];
 };
+
+function overlapItemSnapshot(
+	{ kind, primitive, bbox }: SchematicOverlapPrimitive,
+): SchematicOverlapItem {
+	const item: SchematicOverlapItem = {
+		kind,
+		primitive_id: primitive.getState_PrimitiveId(),
+		bbox,
+	};
+	if (kind === 'component') {
+		const reference = stateString(primitive, 'Designator');
+		if (reference) item.reference = reference;
+	}
+	else if (kind === 'attribute') {
+		const parentPrimitiveId = stateString(primitive, 'ParentPrimitiveId');
+		const key = stateString(primitive, 'Key');
+		const content = stateString(primitive, 'Value');
+		if (parentPrimitiveId) item.parent_primitive_id = parentPrimitiveId;
+		if (key) item.key = key;
+		if (content) item.content = content;
+	}
+	else {
+		const content = stateString(primitive, 'Content');
+		if (content) item.content = content;
+	}
+	return item;
+}
 
 /**
  * Returns placement geometry after a successful mutation.  Collision reporting is
@@ -738,9 +866,11 @@ async function componentPlacementResult(
 	component: ISCH_PrimitiveComponent,
 ): Promise<ComponentPlacementResult> {
 	const primitiveId = component.getState_PrimitiveId();
-	const [bbox, components] = await Promise.all([
+	const [bbox, components, attributes, texts] = await Promise.all([
 		eda.sch_Primitive.getPrimitivesBBox([component]),
 		eda.sch_PrimitiveComponent.getAll(undefined, false),
+		eda.sch_PrimitiveAttribute.getAll(),
+		eda.sch_PrimitiveText.getAll(),
 	]);
 	const candidates = components.filter(
 		candidate => candidate.getState_PrimitiveId() !== primitiveId,
@@ -760,16 +890,50 @@ async function componentPlacementResult(
 			}];
 		})
 		: [];
-	const warnings: ComponentOverlapWarning[] = overlaps.length === 0 ? [] : [{
-		code: 'COMPONENT_OVERLAP',
-		message: `Component overlaps ${overlaps.length} existing schematic component(s)`,
-		overlaps,
-	}];
+	const textCandidates = [
+		...attributes.map(attribute => ({ kind: 'attribute' as const, primitive: attribute })),
+		...texts.map(text => ({ kind: 'text' as const, primitive: text })),
+	];
+	const textBoxes = await Promise.all(textCandidates.map(async candidate => ({
+		...candidate,
+		bbox: await eda.sch_Primitive.getPrimitivesBBox([candidate.primitive]),
+	})));
+	const textOverlaps: TextOverlap[] = bbox
+		? textBoxes.flatMap(({ kind, primitive, bbox: textBBox }) => {
+			if (!textBBox || !bboxesOverlap(bbox, textBBox)) return [];
+			const parentPrimitiveId = kind === 'attribute'
+				? stateString(primitive, 'ParentPrimitiveId')
+				: undefined;
+			return [{
+				primitive_id: primitive.getState_PrimitiveId(),
+				kind,
+				...(parentPrimitiveId ? { parent_primitive_id: parentPrimitiveId } : {}),
+				key: kind === 'attribute' ? stateString(primitive, 'Key') ?? null : null,
+				content: kind === 'attribute'
+					? stateString(primitive, 'Value') ?? null
+					: stateString(primitive, 'Content') ?? null,
+				bbox: textBBox,
+			}];
+		})
+		: [];
+	const warnings: ComponentOverlapWarning[] = [
+		...(overlaps.length === 0 ? [] : [{
+			code: 'COMPONENT_OVERLAP' as const,
+			message: `Component overlaps ${overlaps.length} existing schematic component(s)`,
+			overlaps,
+		}]),
+		...(textOverlaps.length === 0 ? [] : [{
+			code: 'TEXT_OVERLAP' as const,
+			message: `Component overlaps ${textOverlaps.length} schematic text primitive(s)`,
+			overlaps: textOverlaps,
+		}]),
+	];
 	return {
 		...primitiveSnapshot(component, COMPONENT_PROPERTIES),
 		// This is the editor's primitive BBox, not an approximation derived from pins.
 		bbox: bbox ?? null,
 		overlaps,
+		text_overlaps: textOverlaps,
 		warnings,
 	};
 }

@@ -1,5 +1,6 @@
 import { BROKER_HTTP_URL } from '../config';
 import { API_CATALOG, API_TYPE_CATALOG } from '../generated/api-catalog';
+import { encodeBlobBase64 } from '../utils/base64';
 import { CommandError } from '../utils/validation';
 
 const API_PREFIXES = {
@@ -110,7 +111,7 @@ export async function exportRawEdaFile(
 	const requestedName = typeof params.filename === 'string' && params.filename.trim()
 		? params.filename.trim()
 		: undefined;
-	return uploadBinaryResults(result, requestedName, method);
+	return uploadBinaryResults(result, requestedName, method, params.inline === true);
 }
 
 export async function exportRawPrimitiveFile(
@@ -133,13 +134,14 @@ export async function exportRawPrimitiveFile(
 	const requestedName = typeof params.filename === 'string' && params.filename.trim()
 		? params.filename.trim()
 		: undefined;
-	return uploadBinaryResults(result, requestedName, method);
+	return uploadBinaryResults(result, requestedName, method, params.inline === true);
 }
 
 async function uploadBinaryResults(
 	result: unknown,
 	requestedName: string | undefined,
 	fallbackName: string,
+	inline: boolean,
 ): Promise<Record<string, unknown>> {
 	const blobs = Array.isArray(result) ? result : [result];
 	if (typeof Blob === 'undefined' || blobs.length === 0
@@ -157,12 +159,27 @@ async function uploadBinaryResults(
 			index,
 			blobs.length,
 		);
-		artifacts.push(await uploadBlob(blob, filename));
+		artifacts.push(await uploadBlob(blob, filename, inline));
 	}
 	return { artifacts };
 }
 
-async function uploadBlob(result: Blob, filename: string): Promise<Record<string, unknown>> {
+async function uploadBlob(
+	result: Blob,
+	filename: string,
+	inline: boolean,
+): Promise<Record<string, unknown>> {
+	if (inline) {
+		const encoded = await encodeBlobBase64(result);
+		return {
+			filename,
+			media_type: result.type || 'application/octet-stream',
+			size_bytes: encoded.sizeBytes,
+			data_base64: encoded.dataBase64,
+		};
+	}
+	// Legacy HTTP artifact upload fallback. Remove after the next major protocol
+	// version; current MCP transports request inline Base64 through WebSocket RPC.
 	const response = await eda.sys_ClientUrl.request(
 		`${BROKER_HTTP_URL}/upload/artifact?filename=${encodeURIComponent(filename)}`,
 		'POST',

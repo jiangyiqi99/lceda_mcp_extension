@@ -1,5 +1,6 @@
 import { BROKER_HTTP_URL } from '../config';
 import { delay } from '../utils/eda';
+import { encodeBlobBase64 } from '../utils/base64';
 import {
 	asRecord,
 	CommandError,
@@ -15,7 +16,7 @@ export async function captureCanvas(
 		await eda.dmt_EditorControl.zoomToAllPrimitives();
 		await delay(150);
 	}
-	return uploadCurrentCanvas();
+	return uploadCurrentCanvas(params.inline === true);
 }
 
 export async function captureRegion(
@@ -31,15 +32,25 @@ export async function captureRegion(
 	}
 	await eda.dmt_EditorControl.zoomToRegion(x, x + width, y, y + height);
 	await delay(150);
-	return uploadCurrentCanvas();
+	return uploadCurrentCanvas(params.inline === true);
 }
 
-async function uploadCurrentCanvas(): Promise<Record<string, unknown>> {
+async function uploadCurrentCanvas(inline: boolean): Promise<Record<string, unknown>> {
 	const image = await eda.dmt_EditorControl.getCurrentRenderedAreaImage();
 	if (!image) {
 		throw new CommandError('CAPTURE_FAILED', 'No active EDA canvas could be captured');
 	}
 	const mediaType = image.type || 'image/png';
+	if (inline) {
+		const encoded = await encodeBlobBase64(image);
+		return {
+			data_base64: encoded.dataBase64,
+			media_type: mediaType,
+			size_bytes: encoded.sizeBytes,
+		};
+	}
+	// Legacy HTTP upload fallback. Remove after the next major protocol version;
+	// current MCP transports request inline Base64 through the WebSocket RPC.
 	const response = await eda.sys_ClientUrl.request(
 		`${BROKER_HTTP_URL}/upload/image`,
 		'POST',
